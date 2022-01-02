@@ -1,0 +1,30 @@
+{
+  "name": "fs-lru",
+  "version": "1.0.0",
+  "description": "File based LRU cache",
+  "main": "index.js",
+  "scripts": {
+    "test": "tap"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jelenkee/fs-lru.git"
+  },
+  "keywords": [
+    "file",
+    "fs",
+    "lru"
+  ],
+  "author": "Jelenkee",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Jelenkee/fs-lru/issues"
+  },
+  "homepage": "https://github.com/Jelenkee/fs-lru#readme",
+  "dependencies": {
+    "fs-extra": "^10.0.0"
+  },
+  "devDependencies": {
+    "tap": "^15.1.5"
+  }
+}
