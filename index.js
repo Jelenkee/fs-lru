@@ -20,28 +20,35 @@ class FileLRUCache {
             throw new Error("option 'maxSize' is required");
         }
         this.maxSize = options.maxSize;
+        if (this.maxSize <= 0) {
+            this.maxSize = Number.MAX_SAFE_INTEGER;
+        }
         this.maxSizeUnit = options.maxSizeUnit || UNIT_FILE;
         this.registry = {};
 
 
         this.bouncedRemoveOutdated = debounce(this._removeOutdated, 1000, true, true);
 
-        this._init().catch(console.error)
+        this._initPromise = this._init();
         setInterval(() => {
 
         }, 1000).unref();
     }
+    async ready() {
+        return this._initPromise;
+    }
     async _init() {
         await fs.ensureDir(this.dir);
-        this.options.clear && await this.clear();
+        if (this.options.clear) {
+            await this.clear();
+        };
         await this._removeOutdated();
         try {
             this.registry = await fs.readJson(join(this.dir, REGISTRY));
         } catch (error) {
-            if (error.message && error.message.startsWith("ENOENT")) {
-                return;
+            if (!(error.message && error.message.startsWith("ENOENT"))) {
+                throw error;
             }
-            throw error;
         }
 
     }
@@ -63,7 +70,8 @@ class FileLRUCache {
     async set(key, value) {
         const hash = this._hashKey(key);
         this.registry[key] = hash;
-        await fs.writeFile(join(this.dir, hash), value)
+        await fs.writeFile(join(this.dir, hash), value);
+        await this._removeOutdated();
         await this._updateFileRegistry();
     }
     async del(key) {
@@ -84,7 +92,7 @@ class FileLRUCache {
     }
     async clear() {
         await Promise.all((await this._files())
-            .map(file => console.log(file)|fs.unlink(file)));
+            .map(file => fs.unlink(file)));
         await fs.unlink(join(this.dir, REGISTRY));
     }
     async _files() {
@@ -93,13 +101,13 @@ class FileLRUCache {
             .map(file => join(this.dir, file)));
     }
     async _removeOutdated() {
-        const files = (await this._files())
-            .map(async file => ({ file, stat: await fs.stat(file) }));
+        const files = await Promise.all((await this._files())
+            .map(async file => ({ file, stat: await fs.stat(file) })));
         if (this.maxSizeUnit === UNIT_BYTE) {
             const totalSize = files.map(f => f.stat.size).reduce((a, b) => a + b, 0);
             if (totalSize > this.maxSize) {
                 files.sort((a, b) => a.stat.atimeMs - b.stat.atimeMs);
-                const over = total - this.maxSize;
+                const over = totalSize - this.maxSize;
                 let count = 0;
                 let filesToDelete = [];
                 for (const f of files) {
@@ -109,13 +117,13 @@ class FileLRUCache {
                         break;
                     }
                 }
-                await Promise.all(filesToDelete.map(f => unlink(f)));
+                await Promise.all(filesToDelete.map(f => fs.unlink(f)));
             }
         } else {
             if (files.length > this.maxSize) {
                 files.sort((a, b) => a.stat.atimeMs - b.stat.atimeMs);
-                await Promise.all(files.slice(0, this.length - this.maxSize)
-                    .map(f => fs.unlink(f)));
+                await Promise.all(files.slice(0, files.length - this.maxSize)
+                    .map(f => fs.unlink(f.file)));
             }
         }
     }
