@@ -1,6 +1,6 @@
 const { test } = require("tap");
 const LRU = require("./index");
-const { mkdtemp } = require("fs/promises");
+const { ensureDir } = require("fs-extra");
 const { tmpdir } = require("os");
 const { join } = require("path");
 
@@ -184,7 +184,7 @@ test("clear", async t => {
 });
 
 async function mkTmp() {
-    return await mkdtemp(join(tmpdir(), "tt-"));
+    return await ensureDir(join(tmpdir(), "tt-" + Buffer.from((Math.random() + "").slice(2)).toString("hex")));
 }
 
 async function wait(ms) {

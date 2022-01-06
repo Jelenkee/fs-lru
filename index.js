@@ -26,13 +26,7 @@ class FileLRUCache {
         this.maxSizeUnit = options.maxSizeUnit || UNIT_FILE;
         this.registry = {};
 
-
-        this.bouncedRemoveOutdated = debounce(this._removeOutdated, 1000, true, true);
-
         this._initPromise = this._init();
-        setInterval(() => {
-
-        }, 1000).unref();
     }
     async ready() {
         return this._initPromise;
@@ -83,12 +77,6 @@ class FileLRUCache {
     }
     keys() {
         return Object.keys(this.registry);
-    }
-    async values() {
-
-    }
-    async entries() {
-
     }
     async clear() {
         await Promise.all((await this._files())
