@@ -3,6 +3,7 @@ const LRU = require("./index");
 const { ensureDir } = require("fs-extra");
 const { tmpdir } = require("os");
 const { join } = require("path");
+const { createHash } = require("crypto");
 
 test("get", async t => {
     t.plan(2);
@@ -55,25 +56,26 @@ test("registry", async t => {
     await lru1.ready();
     await lru1.set("one", "1");
     await lru1.set("two", "2");
-    t.same(new Set(lru1.keys()), new Set(["one", "two"]));
+    t.same(new Set(await lru1.keys()), new Set(["one", "two"]));
     await lru1.set("three", "3");
-    t.same(new Set(lru1.keys()), new Set(["one", "two", "three"]));
+    t.same(new Set(await lru1.keys()), new Set(["one", "two", "three"]));
     const lru2 = new LRU({
         dir,
         maxSize: 12
     });
     await lru2.ready();
     await lru2.set("four", "4");
-    t.same(new Set(lru2.keys()), new Set(["one", "two", "three", "four"]));
+    t.same(new Set(await lru2.keys()), new Set(["one", "two", "three", "four"]));
 });
 
 test("errors", async t => {
-    t.plan(6);
+    t.plan(7);
 
     const dir = await mkTmp();
-    t.throws(() => new LRU());
-    t.throws(() => new LRU({ dir }));
-    t.throws(() => new LRU({ maxSize: {} }));
+    t.throws(() => new LRU(), "option 'dir' is required");
+    t.throws(() => new LRU({ dir }), "option 'maxSize' is required");
+    t.throws(() => new LRU({ maxSize: {} }), "option 'maxSize' is required");
+    t.throws(() => new LRU({ dir, maxSize: 4, ttl: [] }), "option 'ttl' has to be a number");
     const lru = new LRU({
         dir: join(__dirname, "index.js"),
         maxSize: 12
@@ -155,7 +157,7 @@ test("maxSize", async t => {
 });
 
 test("clear", async t => {
-    t.plan(4);
+    t.plan(5);
 
     const dir = await mkTmp();
 
@@ -163,14 +165,18 @@ test("clear", async t => {
         dir: dir,
         maxSize: 12
     });
+    await lru1.ready();
     await lru1.set("test", "val");
     await lru1.set("test2", "val");
     t.equal(await lru1.size(), 2);
+    t.equal(await lru1.size("file"), 2);
+    t.equal(await lru1.size("byte"), 6);
 
     const lru2 = new LRU({
         dir: dir,
         maxSize: 12
     });
+    await lru2.ready();
     t.equal(await lru2.size(), 2);
 
     const lru3 = new LRU({
@@ -178,13 +184,20 @@ test("clear", async t => {
         maxSize: 12,
         clear: true
     });
-    t.equal(await lru3.size(), 2);
     await lru3.ready();
     t.equal(await lru3.size(), 0);
 });
+test("ttl", async t => {
+    //TODO
+});
 
 async function mkTmp() {
-    return await ensureDir(join(tmpdir(), "tt-" + Buffer.from((Math.random() + "").slice(2)).toString("hex")));
+    const hash = createHash("sha1")
+        .update(Math.random() + "")
+        .digest()
+        .toString("hex")
+        .slice(0, 9);
+    return await ensureDir(join(tmpdir(), "tt-" + hash));
 }
 
 async function wait(ms) {

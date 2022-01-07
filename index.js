@@ -1,11 +1,11 @@
 const fs = require("fs-extra");
 const { join } = require("path");
 const { createHash } = require("crypto");
-const debounce = require("just-debounce");
+const fsp = require("fs/promises")
 
 const UNIT_BYTE = "byte";
 const UNIT_FILE = "file";
-const REGISTRY = "4eadc5713cd7b0c7c0673d765edb0249f7295a72.json";
+const KEY_SET = "SSOT.json";
 
 class FileLRUCache {
     constructor(options = {}) {
@@ -23,8 +23,12 @@ class FileLRUCache {
         if (this.maxSize <= 0) {
             this.maxSize = Number.MAX_SAFE_INTEGER;
         }
+        if (options.ttl != null && typeof options.ttl !== "number") {
+            throw new Error("option 'ttl' has to be a number");
+        }
+        this.ttl = options.ttl;
         this.maxSizeUnit = options.maxSizeUnit || UNIT_FILE;
-        this.registry = {};
+        this.keySet = {};
 
         this._initPromise = this._init();
     }
@@ -33,90 +37,123 @@ class FileLRUCache {
     }
     async _init() {
         await fs.ensureDir(this.dir);
-        if (this.options.clear) {
-            await this.clear();
-        };
-        await this._removeOutdated();
         try {
-            this.registry = await fs.readJson(join(this.dir, REGISTRY));
+            this.keySet = await fs.readJson(join(this.dir, KEY_SET));
         } catch (error) {
             if (!(error.message && error.message.startsWith("ENOENT"))) {
                 throw error;
             }
         }
-
+        if (this.options.clear) {
+            await this.clear();
+        } else {
+            await this._removeTooMuch();
+            await this._removeOutdated();
+        }
     }
     async get(key) {
+        await this._removeOutdated(key);
         const hash = this._hashKey(key);
         try {
-            return await fs.readFile(join(this.dir, hash))
+            const res = await fs.readFile(join(this.dir, hash));
+            this.keySet[key].lastAccess = new Date().getTime();
+            await this._saveKeySet();
+            return res;
         } catch (error) {
             if (error.message && error.message.startsWith("ENOENT")) {
-                return undefined;
+                return;
             }
             throw error;
         }
     }
     async has(key) {
-        const hash = this._hashKey(key);
-        return await fs.pathExists(join(this.dir, hash));
+        await this._removeOutdated(key);
+        return key in this.keySet;
     }
     async set(key, value) {
+        if (typeof value === "string") {
+            value = Buffer.from(value);
+        }
         const hash = this._hashKey(key);
-        this.registry[key] = hash;
         await fs.writeFile(join(this.dir, hash), value);
-        await this._removeOutdated();
-        await this._updateFileRegistry();
+        this.keySet[key] = {
+            lastAccess: new Date().getTime(),
+            size: value.length
+        };
+        await this._removeTooMuch();
     }
     async del(key) {
-        const hash = this._hashKey(key);
-        await fs.unlink(join(this.dir, hash));
+        await this._delFile(key);
+        await this._saveKeySet();
     }
-    async size() {
-        return (await this._files()).length;
+    async size(unit) {
+        await this._removeOutdated();
+        if (unit === UNIT_BYTE) {
+            return Object.values(this.keySet).reduce((pv, cv) => pv + cv.size, 0);
+        } else {
+            return Object.keys(this.keySet).length;
+        }
     }
-    keys() {
-        return Object.keys(this.registry);
+    async keys() {
+        await this._removeOutdated();
+        return Object.keys(this.keySet);
     }
     async clear() {
-        await Promise.all((await this._files())
-            .map(file => fs.unlink(file)));
-        await fs.unlink(join(this.dir, REGISTRY));
+        const that = this;
+        await Promise.all(Object.keys(this.keySet)
+            .map(key => that._delFile(key)));
+        await this._saveKeySet();
     }
-    async _files() {
-        return await Promise.all((await fs.readdir(this.dir))
-            .filter(file => !file.endsWith(".json"))
-            .map(file => join(this.dir, file)));
-    }
-    async _removeOutdated() {
-        const files = await Promise.all((await this._files())
-            .map(async file => ({ file, stat: await fs.stat(file) })));
+    async _removeTooMuch() {
+        const that = this;
+        const entries = Object.entries(this.keySet);
         if (this.maxSizeUnit === UNIT_BYTE) {
-            const totalSize = files.map(f => f.stat.size).reduce((a, b) => a + b, 0);
+            const totalSize = Object.values(this.keySet).reduce((pv, cv) => pv + cv.size, 0)
             if (totalSize > this.maxSize) {
-                files.sort((a, b) => a.stat.atimeMs - b.stat.atimeMs);
+                entries.sort((e1, e2) => e1[1].lastAccess - e2[1].lastAccess);
                 const over = totalSize - this.maxSize;
                 let count = 0;
-                let filesToDelete = [];
-                for (const f of files) {
-                    filesToDelete.push(f.file);
-                    count += f.stat.size;
+                let keysToDelete = [];
+                for (const e of entries) {
+                    keysToDelete.push(e[0]);
+                    count += e[1].size;
                     if (count >= over) {
                         break;
                     }
                 }
-                await Promise.all(filesToDelete.map(f => fs.unlink(f)));
+                await Promise.all(keysToDelete.map(k => that._delFile(k)));
             }
         } else {
-            if (files.length > this.maxSize) {
-                files.sort((a, b) => a.stat.atimeMs - b.stat.atimeMs);
-                await Promise.all(files.slice(0, files.length - this.maxSize)
-                    .map(f => fs.unlink(f.file)));
+            if (entries.length > this.maxSize) {
+                entries.sort((a, b) => a[1] - b[1]);
+                await Promise.all(entries.slice(0, entries.length - this.maxSize)
+                    .map(entry => that._delFile(entry[0])));
             }
         }
+        await this._saveKeySet();
     }
-    async _updateFileRegistry() {
-        await fs.writeJson(join(this.dir, REGISTRY), this.registry);
+    async _removeOutdated(key) {
+        if (this.ttl && this.ttl > 0) {
+            const that = this;
+            const entries = key ? [[key, this.keySet[key] || 0]] : Object.entries(this.keySet);
+
+            const time = new Date().getTime();
+            await Promise.all(entries
+                .map(async entry => {
+                    if ((time - entry[1].lastAccess) * 1000 > that.ttl) {
+                        await that._delFile(entry[0]);
+                    }
+                }));
+            await this._saveKeySet();
+        }
+    }
+    async _saveKeySet() {
+        await fs.writeJson(join(this.dir, KEY_SET), this.keySet);
+    }
+    async _delFile(key) {
+        const hash = this._hashKey(key);
+        await fs.remove(join(this.dir, hash))
+        delete this.keySet[key];
     }
 
     _hashKey(key) {

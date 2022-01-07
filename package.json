@@ -22,8 +22,7 @@
   },
   "homepage": "https://github.com/Jelenkee/fs-lru#readme",
   "dependencies": {
-    "fs-extra": "^10.0.0",
-    "just-debounce": "^1.1.0"
+    "fs-extra": "^10.0.0"
   },
   "devDependencies": {
     "tap": "^15.1.5"
