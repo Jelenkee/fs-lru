@@ -1,5 +1,5 @@
 const { test } = require("tap");
-const LRU = require("./index");
+const createLRU = require("./index");
 const { ensureDir } = require("fs-extra");
 const { tmpdir } = require("os");
 const { join } = require("path");
@@ -8,7 +8,7 @@ const { createHash } = require("crypto");
 test("get", async t => {
     t.plan(2);
 
-    const lru = new LRU({
+    const lru = await createLRU({
         dir: await mkTmp(),
         maxSize: 12
     });
@@ -17,10 +17,35 @@ test("get", async t => {
     t.same(await lru.get("test"), Buffer.from("val"));
 });
 
+test("peek", async t => {
+    t.plan(5);
+
+    const lru = await createLRU({
+        dir: await mkTmp(),
+        maxSize: 3
+    });
+    await lru.set("1", "a");
+    await wait(10);
+    await lru.set("2", "b");
+    await wait(10);
+    await lru.set("3", "c");
+    await wait(10);
+    await lru.get("1");
+    await lru.set("4", "d");
+    await wait(10);
+    t.same(await lru.keys(), ["3", "1", "4"]);
+    t.ok(await lru.has("1"));
+    t.notOk(await lru.has("2"));
+    await lru.peek("3");
+    await lru.set("5", "e");
+    t.same(await lru.keys(), ["1", "4", "5"]);
+    t.notOk(await lru.has("3"));
+});
+
 test("has", async t => {
     t.plan(2);
 
-    const lru = new LRU({
+    const lru = await createLRU({
         dir: await mkTmp(),
         maxSize: 12
     });
@@ -32,7 +57,7 @@ test("has", async t => {
 test("del", async t => {
     t.plan(2);
 
-    const lru = new LRU({
+    const lru = await createLRU({
         dir: await mkTmp(),
         maxSize: 12
     });
@@ -46,7 +71,7 @@ test("registry", async t => {
     t.plan(3);
 
     const dir = await mkTmp();
-    const lru1 = new LRU({
+    const lru1 = await createLRU({
         dir,
         maxSize: 12
     });
@@ -55,7 +80,7 @@ test("registry", async t => {
     t.same(new Set(await lru1.keys()), new Set(["one", "two"]));
     await lru1.set("three", "3");
     t.same(new Set(await lru1.keys()), new Set(["one", "two", "three"]));
-    const lru2 = new LRU({
+    const lru2 = await createLRU({
         dir,
         maxSize: 12
     });
@@ -67,28 +92,36 @@ test("errors", async t => {
     t.plan(7);
 
     const dir = await mkTmp();
-    t.throws(() => new LRU(), "option 'dir' is required");
-    t.throws(() => new LRU({ dir }), "option 'maxSize' is required");
-    t.throws(() => new LRU({ maxSize: {} }), "option 'maxSize' is required");
-    t.throws(() => new LRU({ dir, maxSize: 4, ttl: [] }), "option 'ttl' has to be a number");
-    const lru = new LRU({
+    t.rejects(createLRU(), "option 'dir' is required");
+    t.rejects(createLRU({ dir }), "option 'maxSize' is required");
+    t.rejects(createLRU({ maxSize: {} }), "option 'maxSize' is required");
+    t.rejects(createLRU({ dir, maxSize: 4, ttl: [] }), "option 'ttl' has to be a number");
+    t.rejects(createLRU({
         dir: join(__dirname, "index.js"),
         maxSize: 12
-    });
-    t.rejects(lru.size());
-    const LRUReadError = t.mock("./index", {
+    }));
+    const createLRUReadError1 = t.mock("./index", {
         "fs-extra": {
             ...require("fs-extra"),
             readJson: () => { throw new Error("1") },
-            readFile: () => { throw new Error("2") },
         }
     });
-    const brokenLru1 = new LRUReadError({
+    const brokenLruPromise1 = createLRUReadError1({
         dir: await mkTmp(),
         maxSize: 2
     });
-    t.rejects(brokenLru1.size(), "1");
-    t.rejects(brokenLru1.get("f"), "2");
+    t.rejects(brokenLruPromise1, "1");
+    const createLRUReadError2 = t.mock("./index", {
+        "fs-extra": {
+            ...require("fs-extra"),
+            readFile: () => { throw new Error("2") },
+        }
+    });
+    const brokenLruPromise2 = createLRUReadError2({
+        dir: await mkTmp(),
+        maxSize: 2
+    });
+    t.rejects((await brokenLruPromise2).get("f"), "2");
 
 });
 
@@ -97,11 +130,11 @@ test("maxSize", async t => {
     t.test("file", async t => {
         t.plan(4);
 
-        const lru1 = new LRU({
+        const lru1 = await createLRU({
             dir: await mkTmp(),
             maxSize: 2,
         });
-        const lru2 = new LRU({
+        const lru2 = await createLRU({
             dir: await mkTmp(),
             maxSize: 2,
             maxSizeUnit: "file",
@@ -119,7 +152,7 @@ test("maxSize", async t => {
     t.test("byte", async t => {
         t.plan(4);
 
-        const lru1 = new LRU({
+        const lru1 = await createLRU({
             dir: await mkTmp(),
             maxSize: 10,
             maxSizeUnit: "byte",
@@ -132,7 +165,7 @@ test("maxSize", async t => {
         await lru1.set("3", "3333");
         t.same(await lru1.keys(), ["2", "3"]);
 
-        const lru2 = new LRU({
+        const lru2 = await createLRU({
             dir: await mkTmp(),
             maxSize: 10,
             maxSizeUnit: "byte",
@@ -142,7 +175,7 @@ test("maxSize", async t => {
         await lru2.set("1", Buffer.alloc(100, 0));
         t.equal(await lru2.size(), 0);
 
-        const lru3 = new LRU({
+        const lru3 = await createLRU({
             dir: await mkTmp(),
             maxSize: 0,
             maxSizeUnit: "byte",
@@ -153,11 +186,11 @@ test("maxSize", async t => {
 });
 
 test("clear", async t => {
-    t.plan(5);
+    t.plan(7);
 
     const dir = await mkTmp();
 
-    const lru1 = new LRU({
+    const lru1 = await createLRU({
         dir: dir,
         maxSize: 12
     });
@@ -167,23 +200,25 @@ test("clear", async t => {
     t.equal(await lru1.size("file"), 2);
     t.equal(await lru1.size("byte"), 6);
 
-    const lru2 = new LRU({
+    const lru2 = await createLRU({
         dir: dir,
         maxSize: 12
     });
     t.equal(await lru2.size(), 2);
+    t.same(await lru2.peek("test"), Buffer.from("val"));
 
-    const lru3 = new LRU({
+    const lru3 = await createLRU({
         dir: dir,
         maxSize: 12,
         clear: true
     });
     t.equal(await lru3.size(), 0);
+    t.same(await lru3.peek("test"), undefined);
 });
 test("ttl", async t => {
     t.plan(6);
 
-    const lru1 = new LRU({
+    const lru1 = await createLRU({
         dir: await mkTmp(),
         maxSize: 12,
         ttl: -5
@@ -194,7 +229,7 @@ test("ttl", async t => {
     t.same(await lru1.get("1"), Buffer.from("a"));
     t.equal(await lru1.size(), 2);
 
-    const lru2 = new LRU({
+    const lru2 = await createLRU({
         dir: await mkTmp(),
         maxSize: 12,
         ttl: 1
@@ -205,7 +240,7 @@ test("ttl", async t => {
     t.notOk(await lru2.get("1"))
     t.equal(await lru2.size(), 0);
 
-    const lru3 = new LRU({
+    const lru3 = await createLRU({
         dir: await mkTmp(),
         maxSize: 12,
         ttl: 2

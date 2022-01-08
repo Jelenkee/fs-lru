@@ -4,7 +4,7 @@ const { createHash } = require("crypto");
 
 const UNIT_BYTE = "byte";
 const UNIT_FILE = "file";
-const KEY_SET = "SSOT.json";
+const SSOT = "SSOT.json";
 
 class FileLRUCache {
     constructor(options = {}) {
@@ -22,22 +22,21 @@ class FileLRUCache {
         if (this.maxSize <= 0) {
             this.maxSize = Number.MAX_SAFE_INTEGER;
         }
+
         if (options.ttl != null && typeof options.ttl !== "number") {
             throw new Error("option 'ttl' has to be a number");
         }
         this.ttl = options.ttl;
-        this.maxSizeUnit = options.maxSizeUnit || UNIT_FILE;
-        this.keySet = {};
 
+        this.maxSizeUnit = options.maxSizeUnit || UNIT_FILE;
+        this.ssot = {};
+
+        this.initPromise = this._init();
     }
     async _init() {
-        if (this.initialized) {
-            return;
-        }
-        this.initialized = true;
         await fs.ensureDir(this.dir);
         try {
-            this.keySet = await fs.readJson(join(this.dir, KEY_SET));
+            this.ssot = await fs.readJson(join(this.dir, SSOT));
         } catch (error) {
             if (!(error.message && error.message.startsWith("ENOENT"))) {
                 throw error;
@@ -51,13 +50,18 @@ class FileLRUCache {
         }
     }
     async get(key) {
-        await this._init();
+        return this._get(key, true);
+    }
+    async peek(key) {
+        return this._get(key, false);
+    }
+    async _get(key, update) {
         await this._removeOutdated(key);
         const hash = this._hashKey(key);
         try {
             const res = await fs.readFile(join(this.dir, hash));
-            this.keySet[key].lastAccess = new Date().getTime();
-            await this._saveKeySet();
+            update && (this.ssot[key].lastAccess = new Date().getTime());
+            await this._saveSSOT();
             return res;
         } catch (error) {
             if (error.message && error.message.startsWith("ENOENT")) {
@@ -67,54 +71,50 @@ class FileLRUCache {
         }
     }
     async has(key) {
-        await this._init();
         await this._removeOutdated(key);
-        return key in this.keySet;
+        return key in this.ssot;
     }
     async set(key, value) {
-        await this._init();
         if (typeof value === "string") {
             value = Buffer.from(value);
         }
         const hash = this._hashKey(key);
         await fs.writeFile(join(this.dir, hash), value);
-        this.keySet[key] = {
+        this.ssot[key] = {
             lastAccess: new Date().getTime(),
             size: value.length
         };
         await this._removeTooMuch();
     }
     async del(key) {
-        await this._init();
         await this._delFile(key);
-        await this._saveKeySet();
+        await this._saveSSOT();
     }
     async size(unit) {
-        await this._init();
         await this._removeOutdated();
         if (unit === UNIT_BYTE) {
-            return Object.values(this.keySet).reduce((pv, cv) => pv + cv.size, 0);
+            return Object.values(this.ssot).reduce((pv, cv) => pv + cv.size, 0);
         } else {
-            return Object.keys(this.keySet).length;
+            return Object.keys(this.ssot).length;
         }
     }
     async keys() {
-        await this._init();
         await this._removeOutdated();
-        return Object.keys(this.keySet);
+        return Object.entries(this.ssot)
+            .sort((e1, e2) => e1[1].lastAccess - e2[1].lastAccess)
+            .map(e => e[0]);
     }
     async clear() {
-        await this._init();
         const that = this;
-        await Promise.all(Object.keys(this.keySet)
+        await Promise.all(Object.keys(this.ssot)
             .map(key => that._delFile(key)));
-        await this._saveKeySet();
+        await this._saveSSOT();
     }
     async _removeTooMuch() {
         const that = this;
-        const entries = Object.entries(this.keySet);
+        const entries = Object.entries(this.ssot);
         if (this.maxSizeUnit === UNIT_BYTE) {
-            const totalSize = Object.values(this.keySet).reduce((pv, cv) => pv + cv.size, 0)
+            const totalSize = Object.values(this.ssot).reduce((pv, cv) => pv + cv.size, 0)
             if (totalSize > this.maxSize) {
                 entries.sort((e1, e2) => e1[1].lastAccess - e2[1].lastAccess);
                 const over = totalSize - this.maxSize;
@@ -131,19 +131,19 @@ class FileLRUCache {
             }
         } else {
             if (entries.length > this.maxSize) {
-                entries.sort((a, b) => a[1] - b[1]);
+                entries.sort((a, b) => a[1].lastAccess - b[1].lastAccess);
                 await Promise.all(entries.slice(0, entries.length - this.maxSize)
                     .map(entry => that._delFile(entry[0])));
             }
         }
-        await this._saveKeySet();
+        await this._saveSSOT();
     }
     async _removeOutdated(key) {
         if (this.ttl && this.ttl > 0) {
             const that = this;
             const entries = key
-                ? [[key, this.keySet[key] || 0]]
-                : Object.entries(this.keySet);
+                ? [[key, this.ssot[key] || 0]]
+                : Object.entries(this.ssot);
 
             const time = new Date().getTime();
             await Promise.all(entries
@@ -152,16 +152,16 @@ class FileLRUCache {
                         await that._delFile(entry[0]);
                     }
                 }));
-            await this._saveKeySet();
+            await this._saveSSOT();
         }
     }
-    async _saveKeySet() {
-        await fs.writeJson(join(this.dir, KEY_SET), this.keySet);
+    async _saveSSOT() {
+        await fs.writeJson(join(this.dir, SSOT), this.ssot);
     }
     async _delFile(key) {
         const hash = this._hashKey(key);
         await fs.remove(join(this.dir, hash))
-        delete this.keySet[key];
+        delete this.ssot[key];
     }
 
     _hashKey(key) {
@@ -170,4 +170,8 @@ class FileLRUCache {
             .digest().toString("hex");
     }
 }
-module.exports = FileLRUCache;
+module.exports = async function (options) {
+    const lru = new FileLRUCache(options);
+    await lru.initPromise;
+    return lru;
+};
