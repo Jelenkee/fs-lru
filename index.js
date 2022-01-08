@@ -1,7 +1,6 @@
 const fs = require("fs-extra");
 const { join } = require("path");
 const { createHash } = require("crypto");
-const fsp = require("fs/promises")
 
 const UNIT_BYTE = "byte";
 const UNIT_FILE = "file";
@@ -30,12 +29,12 @@ class FileLRUCache {
         this.maxSizeUnit = options.maxSizeUnit || UNIT_FILE;
         this.keySet = {};
 
-        this._initPromise = this._init();
-    }
-    async ready() {
-        return this._initPromise;
     }
     async _init() {
+        if (this.initialized) {
+            return;
+        }
+        this.initialized = true;
         await fs.ensureDir(this.dir);
         try {
             this.keySet = await fs.readJson(join(this.dir, KEY_SET));
@@ -52,6 +51,7 @@ class FileLRUCache {
         }
     }
     async get(key) {
+        await this._init();
         await this._removeOutdated(key);
         const hash = this._hashKey(key);
         try {
@@ -67,10 +67,12 @@ class FileLRUCache {
         }
     }
     async has(key) {
+        await this._init();
         await this._removeOutdated(key);
         return key in this.keySet;
     }
     async set(key, value) {
+        await this._init();
         if (typeof value === "string") {
             value = Buffer.from(value);
         }
@@ -83,10 +85,12 @@ class FileLRUCache {
         await this._removeTooMuch();
     }
     async del(key) {
+        await this._init();
         await this._delFile(key);
         await this._saveKeySet();
     }
     async size(unit) {
+        await this._init();
         await this._removeOutdated();
         if (unit === UNIT_BYTE) {
             return Object.values(this.keySet).reduce((pv, cv) => pv + cv.size, 0);
@@ -95,10 +99,12 @@ class FileLRUCache {
         }
     }
     async keys() {
+        await this._init();
         await this._removeOutdated();
         return Object.keys(this.keySet);
     }
     async clear() {
+        await this._init();
         const that = this;
         await Promise.all(Object.keys(this.keySet)
             .map(key => that._delFile(key)));
@@ -135,12 +141,14 @@ class FileLRUCache {
     async _removeOutdated(key) {
         if (this.ttl && this.ttl > 0) {
             const that = this;
-            const entries = key ? [[key, this.keySet[key] || 0]] : Object.entries(this.keySet);
+            const entries = key
+                ? [[key, this.keySet[key] || 0]]
+                : Object.entries(this.keySet);
 
             const time = new Date().getTime();
             await Promise.all(entries
                 .map(async entry => {
-                    if ((time - entry[1].lastAccess) * 1000 > that.ttl) {
+                    if ((time - entry[1].lastAccess) / 1000 > that.ttl) {
                         await that._delFile(entry[0]);
                     }
                 }));
