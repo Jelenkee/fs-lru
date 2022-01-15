@@ -1,3 +1,5 @@
+import { Buffer } from "buffer";
+
 export default function createLRU(options: Options): Promise<LRU>;
 
 export interface LRU {
@@ -6,7 +8,7 @@ export interface LRU {
     has(key: string): Promise<boolean>;
     set(key: string, value: string | Buffer): Promise<void>;
     del(key: string): Promise<void>;
-    size(unit?: Unit): Promise<void>;
+    size(unit?: Unit): Promise<number>;
     keys(): Promise<string[]>;
     clear(): Promise<void>;
 }

@@ -51,15 +51,15 @@ await lru.clear();
 All methods are `async`.
 
 #### `lru.get(key)`
-* Returns the content of the entry as `Buffer`. If entry found, `undefined` is returned.
+* Returns the content of the item as `Buffer`. If item not found, `undefined` is returned.
 * Updates expire time.
 
 #### `lru.peek(key)`
-* Returns the content of the entry as `Buffer`. If entry found, `undefined` is returned.
+* Returns the content of the item as `Buffer`. If item not found, `undefined` is returned.
 * Does not update expire time.
 
 #### `lru.has(key)`
-* Returns `true` if entry for given key exists.
+* Returns `true` if item for given key exists.
 * Does not update expire time.
 
 #### `lru.set(key, value)`
